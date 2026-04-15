@@ -89,26 +89,31 @@ export function useStoryPipeline() {
         updateStoryScenes(storyId, [...updatedScenes]);
       });
 
-      const audioPromises = scenes.map(async (scene, i) => {
-        try {
-          updatedScenes[i] = { ...updatedScenes[i], audioStatus: 'generating' };
-          updateStoryScenes(storyId, updatedScenes);
+      // Generate audio sequentially (ElevenLabs limits to 2 concurrent requests)
+      const generateAllAudio = async () => {
+        for (let i = 0; i < scenes.length; i++) {
+          try {
+            updatedScenes[i] = { ...updatedScenes[i], audioStatus: 'generating' };
+            updateStoryScenes(storyId, [...updatedScenes]);
 
-          const { data, error } = await supabase.functions.invoke('generate-voiceover', {
-            body: { text: scene.narration, elevenLabsVoiceId: voice?.elevenLabsVoiceId },
-          });
+            const { data, error } = await supabase.functions.invoke('generate-voiceover', {
+              body: { text: scenes[i].narration, elevenLabsVoiceId: voice?.elevenLabsVoiceId },
+            });
 
-          if (error || data?.error) throw new Error(data?.error || 'Audio gen failed');
-          const audioUrl = `data:audio/mpeg;base64,${data.audioContent}`;
-          updatedScenes[i] = { ...updatedScenes[i], audioUrl, audioStatus: 'done' };
-        } catch (e) {
-          console.error(`Scene ${i + 1} audio error:`, e);
-          updatedScenes[i] = { ...updatedScenes[i], audioStatus: 'error' };
+            if (error || data?.error) throw new Error(data?.error || 'Audio gen failed');
+            const audioUrl = `data:audio/mpeg;base64,${data.audioContent}`;
+            updatedScenes[i] = { ...updatedScenes[i], audioUrl, audioStatus: 'done' };
+          } catch (e) {
+            console.error(`Scene ${i + 1} audio error:`, e);
+            updatedScenes[i] = { ...updatedScenes[i], audioStatus: 'error' };
+          }
+          updateStoryScenes(storyId, [...updatedScenes]);
+          // Small delay between requests to avoid rate limits
+          if (i < scenes.length - 1) await new Promise((r) => setTimeout(r, 500));
         }
-        updateStoryScenes(storyId, [...updatedScenes]);
-      });
+      };
 
-      await Promise.all([...imagePromises, ...audioPromises]);
+      await Promise.all([...imagePromises, generateAllAudio()]);
 
       const hasErrors = updatedScenes.some((s) => s.imageStatus === 'error' || s.audioStatus === 'error');
       const finalStory: Story = {
